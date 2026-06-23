@@ -60,11 +60,13 @@ const C = {
   sub: "#9C8F85",
 };
 
-// 教育費の年額目安（万円）— 面談時に調整する前提のたたき台
+// 教育費の年額目安（万円）— 文科省「令和5年度 子供の学習費調査」等が出典。
+// 幼〜高は学習費総額（塾・習い事を含む）、大学は国公立=授業料＋諸経費／私立は文系・理系の中間。
+// 面談時に調整する前提のたたき台。
 const EDU = {
-  公立中心: { pre: 20, elem: 35, jhs: 54, hs: 51, uni: 67 },
-  高校から私立: { pre: 20, elem: 35, jhs: 54, hs: 105, uni: 118 },
-  私立多め: { pre: 35, elem: 167, jhs: 144, hs: 105, uni: 118 },
+  公立中心: { pre: 19, elem: 37, jhs: 54, hs: 60, uni: 67 },
+  高校から私立: { pre: 19, elem: 37, jhs: 54, hs: 118, uni: 118 },
+  私立多め: { pre: 35, elem: 174, jhs: 156, hs: 118, uni: 118 },
 };
 
 function eduCostForAge(childAge, plan) {
@@ -100,11 +102,25 @@ const fmtMan = (v) => {
 // ＋/−ステッパー（スマホで指1本で操作できる）
 // ───────────────────────────────────────────────
 function Stepper({ label, value, onChange, step = 1, min = 0, max = 9999, unit, hint }) {
-  const dec = () => onChange(Math.max(min, +(value - step).toFixed(2)));
-  const inc = () => onChange(Math.min(max, +(value + step).toFixed(2)));
-  const handleInput = (e) => {
-    const v = parseFloat(e.target.value);
-    onChange(isNaN(v) ? min : Math.min(max, Math.max(min, v)));
+  // 入力中は手で打った文字をそのまま保持（編集バッファ）。
+  // スマホで数値欄の全選択が効かず「03000」のように先頭ゼロが付く不具合を防ぐため、
+  // type="text" にして先頭の余分なゼロを取り除く。
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState("");
+  const clamp = (v) => Math.min(max, Math.max(min, v));
+  const dec = () => onChange(clamp(+(value - step).toFixed(2)));
+  const inc = () => onChange(clamp(+(value + step).toFixed(2)));
+  const handleChange = (e) => {
+    // 数字・マイナス・小数点だけ許可し、先頭の余分なゼロ（03000→3000）を除去
+    let raw = e.target.value.replace(/[^0-9.-]/g, "").replace(/^(-?)0+(?=\d)/, "$1");
+    setText(raw);
+    const v = parseFloat(raw);
+    if (!isNaN(v)) onChange(clamp(v));
+  };
+  const handleBlur = () => {
+    setEditing(false);
+    const v = parseFloat(text);
+    onChange(isNaN(v) ? clamp(0) : clamp(v));
   };
   return (
     <div className="py-2">
@@ -123,12 +139,12 @@ function Stepper({ label, value, onChange, step = 1, min = 0, max = 9999, unit, 
           </button>
           <span className="flex w-[5rem] items-baseline justify-center">
             <input
-              type="number"
+              type="text"
               inputMode="decimal"
-              value={value}
-              step={step}
-              onChange={handleInput}
-              onFocus={(e) => e.target.select()}
+              value={editing ? text : String(value)}
+              onChange={handleChange}
+              onFocus={(e) => { setEditing(true); setText(String(value)); e.target.select(); }}
+              onBlur={handleBlur}
               aria-label={`${label}を直接入力`}
               className="w-12 rounded-lg bg-transparent text-center text-base font-bold tabular-nums outline-none focus:ring-2"
               style={{ color: C.ink, border: `1px dashed ${C.line}` }}
@@ -201,6 +217,7 @@ function LifePlanSimulator() {
   const [incomeM, setIncomeM] = useState(S("incomeM", 38)); // 手取り月収（万）
   const [bonus, setBonus] = useState(S("bonus", 80)); // ボーナス（年・万）
   const [livingM, setLivingM] = useState(S("livingM", 20)); // 月の生活費（住居・教育のぞく）
+  const [livingRetireM, setLivingRetireM] = useState(S("livingRetireM", 20)); // リタイア後の月の生活費
   const [pension, setPension] = useState(S("pension", 18)); // 年金 月額
 
   // 住まい
@@ -223,11 +240,35 @@ function LifePlanSimulator() {
   const [incomeDropAge, setIncomeDropAge] = useState(S("incomeDropAge", 65)); // 片方の収入が下がる年齢
   const [incomeAfter, setIncomeAfter] = useState(S("incomeAfter", 22)); // その後の世帯手取り月収（万）
 
-  // 子ども
-  const [eduPlan, setEduPlan] = useState(S("eduPlan", "公立中心"));
-  const [kids, setKids] = useState(S("kids", [6, 3]));
-  const setKid = (i, v) => setKids((k) => k.map((x, idx) => (idx === i ? v : x)));
-  const addKid = () => setKids((k) => (k.length < 3 ? [...k, 0] : k));
+  // 子ども（各子に教育プランを持たせる。未来の子は born:false ＝「あと value 年で誕生」）
+  // 旧データ（[6, 3] のような数値配列）からの移行もここで吸収する
+  const migrateKids = (arr) =>
+    (arr || []).map((k) =>
+      typeof k === "number"
+        ? { plan: "公立中心", born: true, value: k }
+        : { plan: k.plan || "公立中心", born: k.born !== false, value: k.value ?? 0 }
+    );
+  const [kids, setKids] = useState(
+    migrateKids(
+      S("kids", [
+        { plan: "公立中心", born: true, value: 6 },
+        { plan: "公立中心", born: true, value: 3 },
+      ])
+    )
+  );
+  // 子の「いまの年齢」。未来の子はマイナス（あと value 年で誕生 → 現在 -value 歳）
+  const kidAge = (k) => (k.born ? k.value : -k.value);
+  // これからかかる教育費の目安（万・物価上昇は含めないざっくり値）
+  const eduRemain = (k) => {
+    let sum = 0;
+    for (let a2 = Math.max(0, kidAge(k)); a2 <= 21; a2++) sum += eduCostForAge(a2, k.plan);
+    return sum;
+  };
+  const eduTotalAll = kids.reduce((s, k) => s + eduRemain(k), 0);
+  const setKidField = (i, field, val) =>
+    setKids((ks) => ks.map((k, idx) => (idx === i ? { ...k, [field]: val } : k)));
+  const addKid = () =>
+    setKids((k) => (k.length < 5 ? [...k, { plan: "公立中心", born: true, value: 0 }] : k));
   const removeKid = (i) => setKids((k) => k.filter((_, idx) => idx !== i));
 
   // ★ 改善レバー（万円/月）
@@ -238,17 +279,17 @@ function LifePlanSimulator() {
   // ── 入力値をこの端末のブラウザに自動保存 ──
   useEffect(() => {
     const data = {
-      age, retireAge, endAge, incomeM, bonus, livingM, pension,
+      age, retireAge, endAge, incomeM, bonus, livingM, livingRetireM, pension,
       housingType, rent, repay, remainYears, buyAge, downPay,
       assets, rate, inflation, retireBonus, bigSpend, bigSpendEvery,
-      incomeDropAge, incomeAfter, eduPlan, kids, cutM, upM, memoryM,
+      incomeDropAge, incomeAfter, kids, cutM, upM, memoryM,
     };
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch (e) {}
   }, [
-    age, retireAge, endAge, incomeM, bonus, livingM, pension,
+    age, retireAge, endAge, incomeM, bonus, livingM, livingRetireM, pension,
     housingType, rent, repay, remainYears, buyAge, downPay,
     assets, rate, inflation, retireBonus, bigSpend, bigSpendEvery,
-    incomeDropAge, incomeAfter, eduPlan, kids, cutM, upM, memoryM,
+    incomeDropAge, incomeAfter, kids, cutM, upM, memoryM,
   ]);
 
   const resetAll = () => {
@@ -295,7 +336,7 @@ function LifePlanSimulator() {
       }
 
       let edu = 0;
-      kids.forEach((k0) => (edu += eduCostForAge(k0 + t, eduPlan)));
+      kids.forEach((k) => (edu += eduCostForAge(kidAge(k) + t, k.plan)));
       edu *= infl;
 
       // 大型支出（車の買い替え・住宅修繕・家電など）を数年ごとに計上
@@ -303,8 +344,10 @@ function LifePlanSimulator() {
         oneOff += bigSpend * infl;
 
       const memSpend = a < retireAge ? mem * 12 * infl : 0;
+      // 生活費はリタイア前後で切り替える（退職後は下がる家庭が多い）
+      const livingBase = a >= retireAge ? livingRetireM : livingM;
       const expense =
-        Math.max(0, (livingM - cut) * 12) * infl + memSpend + housing + edu + oneOff;
+        Math.max(0, (livingBase - cut) * 12) * infl + memSpend + housing + edu + oneOff;
       const flow = income - expense;
       // 利回りは「貯金・投資のプラス残高」にだけ掛ける。
       // 残高がマイナス（赤字）のときに利回りを掛けると、借金が利回りで
@@ -322,12 +365,12 @@ function LifePlanSimulator() {
   const base = useMemo(
     () => run(0, 0),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [age, retireAge, endAge, incomeM, bonus, livingM, pension, housingType, rent, repay, remainYears, buyAge, downPay, assets, rate, eduPlan, kids, inflation, retireBonus, bigSpend, bigSpendEvery, incomeDropAge, incomeAfter]
+    [age, retireAge, endAge, incomeM, bonus, livingM, livingRetireM, pension, housingType, rent, repay, remainYears, buyAge, downPay, assets, rate, kids, inflation, retireBonus, bigSpend, bigSpendEvery, incomeDropAge, incomeAfter]
   );
   const improved = useMemo(
     () => run(cutM, upM, memoryM),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [cutM, upM, memoryM, age, retireAge, endAge, incomeM, bonus, livingM, pension, housingType, rent, repay, remainYears, buyAge, downPay, assets, rate, eduPlan, kids, inflation, retireBonus, bigSpend, bigSpendEvery, incomeDropAge, incomeAfter]
+    [cutM, upM, memoryM, age, retireAge, endAge, incomeM, bonus, livingM, livingRetireM, pension, housingType, rent, repay, remainYears, buyAge, downPay, assets, rate, kids, inflation, retireBonus, bigSpend, bigSpendEvery, incomeDropAge, incomeAfter]
   );
 
   const hasLever = cutM > 0 || upM > 0 || memoryM > 0;
@@ -340,7 +383,7 @@ function LifePlanSimulator() {
   // Die With Zero：最後に残るお金と、家族の時間の残り
   const finalBal = view.rows[view.rows.length - 1]?.bal ?? 0;
   const kidTimes = kids
-    .map((k, i) => ({ n: i + 1, left: 18 - k }))
+    .map((k, i) => ({ n: i + 1, left: 18 - kidAge(k) }))
     .filter((x) => x.left > 0);
 
   const chartData = base.rows.map((r, i) => ({
@@ -349,12 +392,26 @@ function LifePlanSimulator() {
     見直し後: improved.rows[i]?.bal,
   }));
 
-  // 底をつく「理由」を、その年齢の中身に合わせて出し分ける
-  const depRow = view.rows.find((r) => r.age === view.depletedAt);
+  // Y軸の単位を統一する：いちばん大きい金額が1億以上なら全部「億」、そうでなければ全部「万」。
+  // （以前は同じ軸に「万」と「億」が混ざって見た目が崩れていた）
+  const maxAbsBal = chartData.reduce(
+    (m, d) => Math.max(m, Math.abs(d.いまのまま || 0), Math.abs(d.見直し後 || 0)),
+    0
+  );
+  const yTickFmt = (v) =>
+    v === 0 ? "0" : maxAbsBal >= 10000 ? `${+(v / 10000).toFixed(1)}億` : v.toLocaleString("ja-JP");
+
+  // 底をつく「理由」を、その年齢の中身に合わせて出し分ける。
+  // 「教育費が重なる」は“2人以上が同時に在学”しているときだけ言う（1人や大学の終盤だけで
+  // 「重なる」と誤表示しないため）。それ以外は原因を決めつけず中立表現にする。
+  const depT = (view.depletedAt ?? age) - age;
+  const eduKidsAtDep = kids.filter(
+    (k) => eduCostForAge(kidAge(k) + depT, k.plan) > 0
+  ).length;
   const depReason =
     view.depletedAt >= retireAge
       ? "リタイア後に年金だけでは暮らしを支えきれず、"
-      : depRow && depRow.edu > 0
+      : eduKidsAtDep >= 2
       ? "教育費が重なる時期に一度"
       : "一度";
 
@@ -399,7 +456,7 @@ function LifePlanSimulator() {
               <Stepper label="手取り月収（世帯）" value={incomeM} onChange={setIncomeM} unit="万" step={1} hint="夫婦合算でOK。だいたいで大丈夫です" />
               <Stepper label="ボーナス（年間・手取り）" value={bonus} onChange={setBonus} unit="万" step={10} />
               <Stepper label="月の生活費" value={livingM} onChange={setLivingM} unit="万" step={1} hint="家賃・ローン・教育費はのぞく" />
-              <Stepper label="いまの貯金・投資の合計" value={assets} onChange={setAssets} unit="万" step={50} />
+              <Stepper label="いまの貯金・投資の合計" value={assets} onChange={setAssets} unit="万" step={50} min={-99999} hint="借金のほうが多いときはマイナスでもOK（例：−200）" />
             </Card>
 
             <Card icon="🔑" title="住まい">
@@ -431,43 +488,72 @@ function LifePlanSimulator() {
             </Card>
 
             <Card icon="🎒" title="お子さんと教育費">
-              <div className="mb-2 flex flex-wrap gap-1.5">
-                {Object.keys(EDU).map((p) => (
-                  <Pill key={p} active={eduPlan === p} onClick={() => setEduPlan(p)} color={C.honey}>
-                    {p}
-                  </Pill>
-                ))}
-              </div>
               {kids.map((k, i) => (
-                <div key={i} className="flex items-center justify-between py-1">
-                  <span className="text-sm font-medium">{i + 1}人目の年齢</span>
-                  <div className="flex items-center gap-1">
-                    <button onClick={() => setKid(i, Math.max(0, k - 1))} className="flex h-9 w-9 items-center justify-center rounded-full text-lg font-bold active:scale-95" style={{ background: C.coralSoft, color: C.coral }}>−</button>
-                    <span className="flex items-baseline">
-                      <input
-                        type="number"
-                        inputMode="numeric"
-                        value={k}
-                        onChange={(e) => setKid(i, Math.max(0, parseInt(e.target.value) || 0))}
-                        onFocus={(e) => e.target.select()}
-                        aria-label={`${i + 1}人目の年齢を直接入力`}
-                        className="w-10 rounded-lg bg-transparent text-center text-base font-bold tabular-nums outline-none focus:ring-2"
-                        style={{ color: C.ink, border: `1px dashed ${C.line}` }}
-                      />
-                      <span className="ml-0.5 text-xs font-medium" style={{ color: C.sub }}>歳</span>
-                    </span>
-                    <button onClick={() => setKid(i, k + 1)} className="flex h-9 w-9 items-center justify-center rounded-full text-lg font-bold active:scale-95" style={{ background: C.coralSoft, color: C.coral }}>＋</button>
-                    <button onClick={() => removeKid(i)} className="ml-1 text-[11px]" style={{ color: C.sub }}>削除</button>
+                <div key={i} className="mb-2 rounded-2xl p-3" style={{ border: `1px solid ${C.line}` }}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-bold" style={{ color: C.ink }}>{i + 1}人目</span>
+                    <button onClick={() => removeKid(i)} className="text-[11px]" style={{ color: C.sub }}>削除</button>
                   </div>
+
+                  {/* もう生まれている / これから */}
+                  <div className="mt-1.5 flex gap-1.5">
+                    <Pill active={k.born} onClick={() => setKidField(i, "born", true)}>もう生まれている</Pill>
+                    <Pill active={!k.born} onClick={() => setKidField(i, "born", false)}>これから</Pill>
+                  </div>
+
+                  {/* 年齢 or あと何年で誕生 */}
+                  <div className="mt-1.5 flex items-center justify-between">
+                    <span className="text-sm font-medium" style={{ color: C.ink }}>
+                      {k.born ? "いまの年齢" : "あと何年で誕生"}
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => setKidField(i, "value", Math.max(0, k.value - 1))} className="flex h-9 w-9 items-center justify-center rounded-full text-lg font-bold active:scale-95" style={{ background: C.coralSoft, color: C.coral }}>−</button>
+                      <span className="flex items-baseline">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={String(k.value)}
+                          onChange={(e) => { const n = parseInt(e.target.value.replace(/[^0-9]/g, ""), 10); setKidField(i, "value", isNaN(n) ? 0 : n); }}
+                          onFocus={(e) => e.target.select()}
+                          aria-label={`${i + 1}人目の${k.born ? "年齢" : "誕生まで"}を直接入力`}
+                          className="w-10 rounded-lg bg-transparent text-center text-base font-bold tabular-nums outline-none focus:ring-2"
+                          style={{ color: C.ink, border: `1px dashed ${C.line}` }}
+                        />
+                        <span className="ml-0.5 text-xs font-medium" style={{ color: C.sub }}>{k.born ? "歳" : "年後"}</span>
+                      </span>
+                      <button onClick={() => setKidField(i, "value", k.value + 1)} className="flex h-9 w-9 items-center justify-center rounded-full text-lg font-bold active:scale-95" style={{ background: C.coralSoft, color: C.coral }}>＋</button>
+                    </div>
+                  </div>
+
+                  {/* この子の教育プラン */}
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {Object.keys(EDU).map((p) => (
+                      <Pill key={p} active={k.plan === p} onClick={() => setKidField(i, "plan", p)} color={C.honey}>
+                        {p}
+                      </Pill>
+                    ))}
+                  </div>
+
+                  {/* この子の教育費の目安 */}
+                  <p className="mt-1.5 text-[12px] font-bold" style={{ color: C.honey }}>
+                    これからの教育費：約 {fmtMan(eduRemain(k))}円
+                  </p>
                 </div>
               ))}
-              {kids.length < 3 && (
+              {kids.length < 5 && (
                 <button onClick={addKid} className="mt-1 text-xs font-bold" style={{ color: C.coral }}>
-                  ＋ お子さんを追加
+                  ＋ お子さんを追加（未来の子もOK）
                 </button>
               )}
+
+              {/* 全員ぶんの合計 */}
+              <div className="mt-2 flex items-baseline justify-between rounded-2xl px-3 py-2" style={{ background: "#FBF1DE" }}>
+                <span className="text-xs font-bold" style={{ color: C.ink }}>全員ぶん・これからの教育費</span>
+                <span className="text-base font-black tabular-nums" style={{ color: C.honey }}>約 {fmtMan(eduTotalAll)}円</span>
+              </div>
+
               <p className="mt-2 text-[11px] leading-relaxed" style={{ color: C.sub }}>
-                保育園〜大学までの平均的な費用が、年齢に合わせて自動で乗ります。
+                幼稚園〜大学の平均費用（塾・習い事を含む／文科省 令和5年度）を、年齢に合わせて自動で乗せています。0〜2歳の保育料は別途。金額はプラン別のざっくり目安です。
               </p>
             </Card>
 
@@ -478,7 +564,8 @@ function LifePlanSimulator() {
               <div className="pt-1">
                 <Stepper label="リタイア予定" value={retireAge} onChange={setRetireAge} unit="歳" min={55} max={75} />
                 <Stepper label="何歳まで見る？" value={endAge} onChange={setEndAge} unit="歳" min={80} max={100} step={5} />
-                <Stepper label="年金（月・世帯）" value={pension} onChange={setPension} unit="万" />
+                <Stepper label="年金（月・世帯）" value={pension} onChange={setPension} unit="万" hint="夫婦の働き方で13〜23万と幅があります。ねんきん定期便の額が確実です" />
+                <Stepper label="リタイア後の生活費（月）" value={livingRetireM} onChange={setLivingRetireM} unit="万" step={1} hint="退職後は教育費・通勤・食費が減り、現役より下がる家庭が多い。現役と同額にすれば下げません" />
                 <Stepper label="想定利回り" value={rate} onChange={setRate} unit="%" step={0.5} max={7} hint="NISAなど長期運用なら2〜3%が控えめな目安" />
                 <Stepper label="インフレ率" value={inflation} onChange={setInflation} unit="%" step={0.5} max={5} hint="物価上昇。生活費・教育費が毎年これだけ上がる前提。控えめなら1〜2%" />
                 <Stepper label="退職金（一時金）" value={retireBonus} onChange={setRetireBonus} unit="万" step={100} max={5000} hint="リタイア年に一度だけ入るお金。なければ0に" />
@@ -519,7 +606,7 @@ function LifePlanSimulator() {
                   <input
                     type="range"
                     min={0}
-                    max={3}
+                    max={5}
                     step={0.1}
                     value={cutM}
                     onChange={(e) => setCutM(parseFloat(e.target.value))}
@@ -615,7 +702,7 @@ function LifePlanSimulator() {
                     </defs>
                     <CartesianGrid stroke={C.line} vertical={false} />
                     <XAxis dataKey="age" tick={{ fontSize: 10, fill: C.sub }} tickLine={false} axisLine={{ stroke: C.line }} interval="preserveStartEnd" minTickGap={30} tickFormatter={(v) => `${v}歳`} />
-                    <YAxis tick={{ fontSize: 10, fill: C.sub }} tickLine={false} axisLine={false} width={42} tickFormatter={(v) => (Math.abs(v) >= 10000 ? `${+(v / 10000).toFixed(1)}億` : v.toLocaleString("ja-JP"))} />
+                    <YAxis tick={{ fontSize: 10, fill: C.sub }} tickLine={false} axisLine={false} width={42} tickFormatter={yTickFmt} />
                     <Tooltip
                       formatter={(v, name) => [`${fmtMan(v)}円`, name]}
                       labelFormatter={(l) => `${l}歳のとき`}
