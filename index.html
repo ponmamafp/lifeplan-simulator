@@ -349,11 +349,20 @@ function LifePlanSimulator() {
     見直し後: improved.rows[i]?.bal,
   }));
 
+  // 底をつく「理由」を、その年齢の中身に合わせて出し分ける
+  const depRow = view.rows.find((r) => r.age === view.depletedAt);
+  const depReason =
+    view.depletedAt >= retireAge
+      ? "リタイア後に年金だけでは暮らしを支えきれず、"
+      : depRow && depRow.edu > 0
+      ? "教育費が重なる時期に一度"
+      : "一度";
+
   const summary = ok
     ? hasLever
       ? `この使い方でも、${endAge}歳まで貯金がもちそうです。リタイア時は${fmtMan(improved.atRetire ?? 0)}（いまのままと比べて${diffAtRetire >= 0 ? "＋" : "−"}${fmtMan(Math.abs(diffAtRetire))}）。数字で確かめてから使うお金に、罪悪感はいりません。`
       : `このペースなら、大きく崩れることなく${endAge}歳まで貯金を保てそうです。いちばん薄くなるのは${view.bottom.age}歳ごろ。そこさえ知っておけば、慌てなくて大丈夫。`
-    : `${view.depletedAt}歳ごろ、教育費が重なる時期に一度貯金が底をつく見込みです。でも今それが見えたことが、いちばんの収穫。下のレバーを動かすと、どれくらいで変わるか試せます。`;
+    : `${view.depletedAt}歳ごろ、${depReason}貯金が底をつく見込みです。でも今それが見えたことが、いちばんの収穫。下のレバーを動かすと、どれくらいで変わるか試せます。`;
 
   return (
     <div className="min-h-screen w-full" style={{ background: C.cream, color: C.ink }}>
