@@ -218,7 +218,8 @@ function LifePlanSimulator() {
   const [bonus, setBonus] = useState(S("bonus", 80)); // ボーナス（年・万）
   const [livingM, setLivingM] = useState(S("livingM", 20)); // 月の生活費（住居・教育のぞく）
   const [livingRetireM, setLivingRetireM] = useState(S("livingRetireM", 20)); // リタイア後の月の生活費
-  const [pension, setPension] = useState(S("pension", 18)); // 年金 月額
+  const [pension, setPension] = useState(S("pension", 18)); // 年金 月額（手入力の値）
+  const [pensionAuto, setPensionAuto] = useState(S("pensionAuto", true)); // 収入から自動推定するか
 
   // 住まい
   const [housingType, setHousingType] = useState(S("housingType", "rent"));
@@ -234,9 +235,10 @@ function LifePlanSimulator() {
 
   // FP視点の前提（詳細設定）
   const [inflation, setInflation] = useState(S("inflation", 1.5)); // インフレ率（%/年）
+  const [raiseRate, setRaiseRate] = useState(S("raiseRate", 1.5)); // 昇給率（%/年・現役の収入が毎年増える）
   const [retireBonus, setRetireBonus] = useState(S("retireBonus", 1000)); // 退職金（万・一時金）
-  const [bigSpend, setBigSpend] = useState(S("bigSpend", 150)); // 大型支出 1回あたり（万）
-  const [bigSpendEvery, setBigSpendEvery] = useState(S("bigSpendEvery", 7)); // 大型支出のペース（年ごと）
+  const [bigSpend, setBigSpend] = useState(S("bigSpend", 120)); // 大型支出 1回あたり（万）
+  const [bigSpendEvery, setBigSpendEvery] = useState(S("bigSpendEvery", 10)); // 大型支出のペース（年ごと）
   const [incomeDropAge, setIncomeDropAge] = useState(S("incomeDropAge", 65)); // 片方の収入が下がる年齢
   const [incomeAfter, setIncomeAfter] = useState(S("incomeAfter", 22)); // その後の世帯手取り月収（万）
 
@@ -276,19 +278,24 @@ function LifePlanSimulator() {
   const [upM, setUpM] = useState(S("upM", 0)); // 収入アップ
   const [memoryM, setMemoryM] = useState(S("memoryM", 0)); // 思い出につかう（Die With Zero）
 
+  // 年金（月・世帯）の自動推定：13万（夫婦の基礎年金）＋ 手取り月収×0.25、上限30万。
+  // 国のモデル年金（夫婦・手取り38万前後で約23万）に合うよう調整した目安。
+  const estPension = Math.min(30, Math.max(13, Math.round(13 + incomeM * 0.25)));
+  const pensionUsed = pensionAuto ? estPension : pension;
+
   // ── 入力値をこの端末のブラウザに自動保存 ──
   useEffect(() => {
     const data = {
-      age, retireAge, endAge, incomeM, bonus, livingM, livingRetireM, pension,
+      age, retireAge, endAge, incomeM, bonus, livingM, livingRetireM, pension, pensionAuto,
       housingType, rent, repay, remainYears, buyAge, downPay,
-      assets, rate, inflation, retireBonus, bigSpend, bigSpendEvery,
+      assets, rate, inflation, raiseRate, retireBonus, bigSpend, bigSpendEvery,
       incomeDropAge, incomeAfter, kids, cutM, upM, memoryM,
     };
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch (e) {}
   }, [
-    age, retireAge, endAge, incomeM, bonus, livingM, livingRetireM, pension,
+    age, retireAge, endAge, incomeM, bonus, livingM, livingRetireM, pension, pensionAuto,
     housingType, rent, repay, remainYears, buyAge, downPay,
-    assets, rate, inflation, retireBonus, bigSpend, bigSpendEvery,
+    assets, rate, inflation, raiseRate, retireBonus, bigSpend, bigSpendEvery,
     incomeDropAge, incomeAfter, kids, cutM, upM, memoryM,
   ]);
 
@@ -313,13 +320,15 @@ function LifePlanSimulator() {
 
       // 収入：リタイア後は年金（リタイア年だけ退職金を一時金で加算）。
       // 「収入が下がる年齢」以降は、世帯手取りを incomeAfter に切り替える。
+      // 現役の収入・ボーナスは昇給率で毎年増やす（年金は増やさない＝保守的）。
+      const raise = Math.pow(1 + raiseRate / 100, t);
       let income;
       if (a >= retireAge) {
-        income = pension * 12 + (a === retireAge ? retireBonus : 0);
+        income = pensionUsed * 12 + (a === retireAge ? retireBonus : 0);
       } else if (a >= incomeDropAge) {
-        income = (incomeAfter + up) * 12;
+        income = (incomeAfter * raise + up) * 12;
       } else {
-        income = (incomeM + up) * 12 + bonus;
+        income = (incomeM * raise + up) * 12 + bonus * raise;
       }
 
       let housing = 0;
@@ -365,12 +374,12 @@ function LifePlanSimulator() {
   const base = useMemo(
     () => run(0, 0),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [age, retireAge, endAge, incomeM, bonus, livingM, livingRetireM, pension, housingType, rent, repay, remainYears, buyAge, downPay, assets, rate, kids, inflation, retireBonus, bigSpend, bigSpendEvery, incomeDropAge, incomeAfter]
+    [age, retireAge, endAge, incomeM, bonus, livingM, livingRetireM, pension, pensionAuto, housingType, rent, repay, remainYears, buyAge, downPay, assets, rate, kids, inflation, raiseRate, retireBonus, bigSpend, bigSpendEvery, incomeDropAge, incomeAfter]
   );
   const improved = useMemo(
     () => run(cutM, upM, memoryM),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [cutM, upM, memoryM, age, retireAge, endAge, incomeM, bonus, livingM, livingRetireM, pension, housingType, rent, repay, remainYears, buyAge, downPay, assets, rate, kids, inflation, retireBonus, bigSpend, bigSpendEvery, incomeDropAge, incomeAfter]
+    [cutM, upM, memoryM, age, retireAge, endAge, incomeM, bonus, livingM, livingRetireM, pension, pensionAuto, housingType, rent, repay, remainYears, buyAge, downPay, assets, rate, kids, inflation, raiseRate, retireBonus, bigSpend, bigSpendEvery, incomeDropAge, incomeAfter]
   );
 
   const hasLever = cutM > 0 || upM > 0 || memoryM > 0;
@@ -392,14 +401,18 @@ function LifePlanSimulator() {
     見直し後: improved.rows[i]?.bal,
   }));
 
-  // Y軸の単位を統一する：いちばん大きい金額が1億以上なら全部「億」、そうでなければ全部「万」。
-  // （以前は同じ軸に「万」と「億」が混ざって見た目が崩れていた）
-  const maxAbsBal = chartData.reduce(
-    (m, d) => Math.max(m, Math.abs(d.いまのまま || 0), Math.abs(d.見直し後 || 0)),
-    0
-  );
+  // Y軸：マイナスが深すぎてプラスが潰れないよう、下限に「床」を設ける。
+  // プラスのピークより深く沈むときは、下限をプラスのピークと同じ深さまでに抑える
+  // （それ以上の落ち込みはグラフの外＝下に振り切れる。実際の深さは下のカードの数字で確認）。
+  const allBals = chartData.flatMap((d) => [d.いまのまま, d.見直し後].filter((v) => typeof v === "number"));
+  const maxPos = Math.max(0, ...allBals);
+  const minBal = Math.min(0, ...allBals);
+  const deepNeg = maxPos > 0 && minBal < -maxPos;
+  const yFloor = deepNeg ? -Math.round(maxPos) : "dataMin";
+  // 表示される範囲の大きさで単位（万/億）を統一して決める
+  const displayMax = deepNeg ? maxPos : Math.max(maxPos, Math.abs(minBal));
   const yTickFmt = (v) =>
-    v === 0 ? "0" : maxAbsBal >= 10000 ? `${+(v / 10000).toFixed(1)}億` : v.toLocaleString("ja-JP");
+    v === 0 ? "0" : displayMax >= 10000 ? `${+(v / 10000).toFixed(1)}億` : v.toLocaleString("ja-JP");
 
   // 底をつく「理由」を、その年齢の中身に合わせて出し分ける。
   // 「教育費が重なる」は“2人以上が同時に在学”しているときだけ言う（1人や大学の終盤だけで
@@ -564,10 +577,32 @@ function LifePlanSimulator() {
               <div className="pt-1">
                 <Stepper label="リタイア予定" value={retireAge} onChange={setRetireAge} unit="歳" min={55} max={75} />
                 <Stepper label="何歳まで見る？" value={endAge} onChange={setEndAge} unit="歳" min={80} max={100} step={5} />
-                <Stepper label="年金（月・世帯）" value={pension} onChange={setPension} unit="万" hint="夫婦の働き方で13〜23万と幅があります。ねんきん定期便の額が確実です" />
+                <div className="py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-medium" style={{ color: C.ink }}>年金（月・世帯）</span>
+                    <div className="flex gap-1">
+                      <Pill active={pensionAuto} onClick={() => setPensionAuto(true)}>収入から自動</Pill>
+                      <Pill active={!pensionAuto} onClick={() => { setPensionAuto(false); setPension(estPension); }}>手入力</Pill>
+                    </div>
+                  </div>
+                  {pensionAuto ? (
+                    <p className="mt-1 text-[14px] font-black tabular-nums" style={{ color: C.sage }}>
+                      約 {estPension} 万／月
+                      <span className="ml-1 text-[11px] font-medium" style={{ color: C.sub }}>
+                        （手取り月収 {incomeM} 万から自動推定）
+                      </span>
+                    </p>
+                  ) : (
+                    <Stepper label="ねんきん定期便の額（月）" value={pension} onChange={setPension} unit="万" />
+                  )}
+                  <p className="mt-0.5 text-[11px] leading-relaxed" style={{ color: C.sub }}>
+                    💡 自動はあくまで「会社員世帯のざっくり目安」。<b style={{ color: C.coral }}>正確に見たいときは「手入力」にして、ねんきん定期便（またはねんきんネット）の見込み額を入れてください。</b>自営業（国民年金のみ）は約13万が目安です。
+                  </p>
+                </div>
                 <Stepper label="リタイア後の生活費（月）" value={livingRetireM} onChange={setLivingRetireM} unit="万" step={1} hint="退職後は教育費・通勤・食費が減り、現役より下がる家庭が多い。現役と同額にすれば下げません" />
                 <Stepper label="想定利回り" value={rate} onChange={setRate} unit="%" step={0.5} max={7} hint="NISAなど長期運用なら2〜3%が控えめな目安" />
                 <Stepper label="インフレ率" value={inflation} onChange={setInflation} unit="%" step={0.5} max={5} hint="物価上昇。生活費・教育費が毎年これだけ上がる前提。控えめなら1〜2%" />
+                <Stepper label="昇給率" value={raiseRate} onChange={setRaiseRate} unit="%" step={0.5} max={5} hint="現役の収入が毎年これだけ増える前提。インフレ率と同じなら実質横ばい。0にすると一生同じ収入" />
                 <Stepper label="退職金（一時金）" value={retireBonus} onChange={setRetireBonus} unit="万" step={100} max={5000} hint="リタイア年に一度だけ入るお金。なければ0に" />
                 <Stepper label="大型支出（1回）" value={bigSpend} onChange={setBigSpend} unit="万" step={50} max={2000} hint="車の買い替え・住宅修繕・家電などのまとまった出費" />
                 <Stepper label="大型支出のペース" value={bigSpendEvery} onChange={setBigSpendEvery} unit="年ごと" step={1} min={1} max={20} hint="上の支出を何年ごとに見込むか" />
@@ -702,7 +737,7 @@ function LifePlanSimulator() {
                     </defs>
                     <CartesianGrid stroke={C.line} vertical={false} />
                     <XAxis dataKey="age" tick={{ fontSize: 10, fill: C.sub }} tickLine={false} axisLine={{ stroke: C.line }} interval="preserveStartEnd" minTickGap={30} tickFormatter={(v) => `${v}歳`} />
-                    <YAxis tick={{ fontSize: 10, fill: C.sub }} tickLine={false} axisLine={false} width={42} tickFormatter={yTickFmt} />
+                    <YAxis domain={[yFloor, "auto"]} allowDataOverflow tick={{ fontSize: 10, fill: C.sub }} tickLine={false} axisLine={false} width={42} tickFormatter={yTickFmt} />
                     <Tooltip
                       formatter={(v, name) => [`${fmtMan(v)}円`, name]}
                       labelFormatter={(l) => `${l}歳のとき`}
