@@ -69,14 +69,17 @@ const EDU = {
   私立多め: { pre: 35, elem: 174, jhs: 156, hs: 118, uni: 118 },
 };
 
-// 年金（月・世帯）の自動推定タイプ。base=夫婦の基礎年金ベース、slope=手取り月収あたりの厚生年金分、cap=上限。
-// 自営はほぼ国民年金のみ＝収入によらず約13万。会社員・共働きは厚生年金分が乗る。あくまで目安。
-const PENSION_TYPES = {
-  会社員世帯: { label: "会社員・公務員（片働き）", base: 13, slope: 0.25, cap: 30 },
-  共働き: { label: "共働き（正社員×2）", base: 13, slope: 0.3, cap: 34 },
-  会社員パート: { label: "会社員＋パート", base: 13, slope: 0.2, cap: 26 },
-  自営業: { label: "自営業・フリーランス", base: 13, slope: 0.03, cap: 15 },
-};
+// 就業区分のラベル
+const JOBS_SELF = { 会社員: "会社員・公務員", 自営: "自営・フリー", パート: "パート" };
+const JOBS_SPOUSE = { 会社員: "会社員・公務員", 自営: "自営・フリー", パート: "パート", 専業: "専業主婦・主夫" };
+
+// 1人あたりの年金（月）目安：基礎年金(満額約7万)＋厚生年金分（会社員のみ収入に応じて）。
+// 自営・専業は国民年金（基礎）のみ＝約7万。あくまでざっくり目安。
+function pensionForPerson(job, incomeM) {
+  if (job === "専業" || job === "自営") return 7;
+  if (job === "パート") return Math.min(10, Math.round(7 + incomeM * 0.12));
+  return Math.min(17, Math.round(7 + incomeM * 0.26)); // 会社員・公務員
+}
 
 function eduCostForAge(childAge, plan) {
   const e = EDU[plan];
@@ -220,16 +223,25 @@ function Card({ icon, title, children }) {
 // ───────────────────────────────────────────────
 function LifePlanSimulator() {
   // 基本（月ベースで入力）
-  const [age, setAge] = useState(S("age", 38));
-  const [retireAge, setRetireAge] = useState(S("retireAge", 65));
+  const [age, setAge] = useState(S("age", 38)); // 本人の年齢
+  const [retireAge, setRetireAge] = useState(S("retireAge", 65)); // 本人のリタイア年齢
   const [endAge, setEndAge] = useState(S("endAge", 95));
-  const [incomeM, setIncomeM] = useState(S("incomeM", 38)); // 手取り月収（万）
-  const [bonus, setBonus] = useState(S("bonus", 80)); // ボーナス（年・万）
+  const [incomeM, setIncomeM] = useState(S("incomeM", 38)); // 本人の手取り月収（万）
+  const [jobSelf, setJobSelf] = useState(S("jobSelf", "会社員")); // 本人の就業区分
+  const [bonus, setBonus] = useState(S("bonus", 80)); // ボーナス（年・万・世帯）
   const [livingM, setLivingM] = useState(S("livingM", 20)); // 月の生活費（住居・教育のぞく）
   const [livingRetireM, setLivingRetireM] = useState(S("livingRetireM", 20)); // リタイア後の月の生活費
-  const [pension, setPension] = useState(S("pension", 18)); // 年金 月額（手入力の値）
+
+  // 配偶者（分けて入力）
+  const [hasSpouse, setHasSpouse] = useState(S("hasSpouse", true));
+  const [ageSpouse, setAgeSpouse] = useState(S("ageSpouse", 38)); // 配偶者の年齢
+  const [incomeSpouseM, setIncomeSpouseM] = useState(S("incomeSpouseM", 0)); // 配偶者の手取り月収
+  const [jobSpouse, setJobSpouse] = useState(S("jobSpouse", "専業")); // 配偶者の就業区分
+  const [retireSpouse, setRetireSpouse] = useState(S("retireSpouse", 65)); // 配偶者のリタイア年齢
+
+  // 年金
+  const [pension, setPension] = useState(S("pension", 23)); // 年金 月額・世帯（手入力の値）
   const [pensionAuto, setPensionAuto] = useState(S("pensionAuto", true)); // 収入から自動推定するか
-  const [pensionType, setPensionType] = useState(S("pensionType", "会社員世帯")); // 世帯の働き方タイプ
 
   // 住まい
   const [housingType, setHousingType] = useState(S("housingType", "rent"));
@@ -249,8 +261,6 @@ function LifePlanSimulator() {
   const [retireBonus, setRetireBonus] = useState(S("retireBonus", 1000)); // 退職金（万・一時金）
   const [bigSpend, setBigSpend] = useState(S("bigSpend", 120)); // 大型支出 1回あたり（万）
   const [bigSpendEvery, setBigSpendEvery] = useState(S("bigSpendEvery", 10)); // 大型支出のペース（年ごと）
-  const [incomeDropAge, setIncomeDropAge] = useState(S("incomeDropAge", 65)); // 片方の収入が下がる年齢
-  const [incomeAfter, setIncomeAfter] = useState(S("incomeAfter", 22)); // その後の世帯手取り月収（万）
 
   // 子ども（各子に教育プランを持たせる。未来の子は born:false ＝「あと value 年で誕生」）
   // 旧データ（[6, 3] のような数値配列）からの移行もここで吸収する
@@ -288,26 +298,34 @@ function LifePlanSimulator() {
   const [upM, setUpM] = useState(S("upM", 0)); // 収入アップ
   const [memoryM, setMemoryM] = useState(S("memoryM", 0)); // 思い出につかう（Die With Zero）
 
-  // 年金（月・世帯）の自動推定：13万（夫婦の基礎年金）＋ 手取り月収×0.25、上限30万。
-  // 国のモデル年金（夫婦・手取り38万前後で約23万）に合うよう調整した目安。
-  const pt = PENSION_TYPES[pensionType] || PENSION_TYPES.会社員世帯;
-  const estPension = Math.min(pt.cap, Math.max(pt.base, Math.round(pt.base + incomeM * pt.slope)));
-  const pensionUsed = pensionAuto ? estPension : pension;
+  // 年金：本人＋配偶者をそれぞれ就業区分・収入から計算。手入力時は世帯合計をその比率で按分。
+  let pSelfBase = pensionForPerson(jobSelf, incomeM);
+  let pSpouseBase = hasSpouse ? pensionForPerson(jobSpouse, incomeSpouseM) : 0;
+  const estPension = pSelfBase + pSpouseBase; // 自動推定の世帯合計（表示用）
+  let pSelf = pSelfBase;
+  let pSpouse = pSpouseBase;
+  if (!pensionAuto) {
+    const scale = estPension > 0 ? pension / estPension : 0.5;
+    pSelf = pSelfBase * scale;
+    pSpouse = pSpouseBase * scale;
+  }
 
   // ── 入力値をこの端末のブラウザに自動保存 ──
   useEffect(() => {
     const data = {
-      age, retireAge, endAge, incomeM, bonus, livingM, livingRetireM, pension, pensionAuto, pensionType,
+      age, retireAge, endAge, incomeM, jobSelf, bonus, livingM, livingRetireM, pension, pensionAuto,
+      hasSpouse, ageSpouse, incomeSpouseM, jobSpouse, retireSpouse,
       housingType, rent, repay, remainYears, buyAge, downPay,
       assets, rate, inflation, raiseRate, retireBonus, bigSpend, bigSpendEvery,
-      incomeDropAge, incomeAfter, kids, cutM, upM, memoryM,
+      kids, cutM, upM, memoryM,
     };
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch (e) {}
   }, [
-    age, retireAge, endAge, incomeM, bonus, livingM, livingRetireM, pension, pensionAuto, pensionType,
+    age, retireAge, endAge, incomeM, jobSelf, bonus, livingM, livingRetireM, pension, pensionAuto,
+    hasSpouse, ageSpouse, incomeSpouseM, jobSpouse, retireSpouse,
     housingType, rent, repay, remainYears, buyAge, downPay,
     assets, rate, inflation, raiseRate, retireBonus, bigSpend, bigSpendEvery,
-    incomeDropAge, incomeAfter, kids, cutM, upM, memoryM,
+    kids, cutM, upM, memoryM,
   ]);
 
   const resetAll = () => {
@@ -329,17 +347,18 @@ function LifePlanSimulator() {
       // 物価上昇率：t年後の生活費・教育費・家賃をふくらませる係数
       const infl = Math.pow(1 + inflation / 100, t);
 
-      // 収入：リタイア後は年金（リタイア年だけ退職金を一時金で加算）。
-      // 「収入が下がる年齢」以降は、世帯手取りを incomeAfter に切り替える。
-      // 現役の収入・ボーナスは昇給率で毎年増やす（年金は増やさない＝保守的）。
+      // 収入：本人・配偶者それぞれ、リタイア前は給与（昇給率で増加）、後は年金。
+      // 本人のリタイア年に退職金を一時金で加算。改善レバーupは本人の収入アップとして反映。
       const raise = Math.pow(1 + raiseRate / 100, t);
-      let income;
-      if (a >= retireAge) {
-        income = pensionUsed * 12 + (a === retireAge ? retireBonus : 0);
-      } else if (a >= incomeDropAge) {
-        income = (incomeAfter * raise + up) * 12;
-      } else {
-        income = (incomeM * raise + up) * 12 + bonus * raise;
+      let income = 0;
+      // 本人
+      if (a < retireAge) income += (incomeM * raise + up) * 12 + bonus * raise;
+      else { income += pSelf * 12; if (a === retireAge) income += retireBonus; }
+      // 配偶者
+      if (hasSpouse) {
+        const aSp = ageSpouse + t;
+        if (aSp >= retireSpouse) income += pSpouse * 12;
+        else if (jobSpouse !== "専業") income += incomeSpouseM * raise * 12;
       }
 
       let housing = 0;
@@ -385,12 +404,12 @@ function LifePlanSimulator() {
   const base = useMemo(
     () => run(0, 0),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [age, retireAge, endAge, incomeM, bonus, livingM, livingRetireM, pension, pensionAuto, pensionType, housingType, rent, repay, remainYears, buyAge, downPay, assets, rate, kids, inflation, raiseRate, retireBonus, bigSpend, bigSpendEvery, incomeDropAge, incomeAfter]
+    [age, retireAge, endAge, incomeM, jobSelf, bonus, livingM, livingRetireM, pension, pensionAuto, hasSpouse, ageSpouse, incomeSpouseM, jobSpouse, retireSpouse, housingType, rent, repay, remainYears, buyAge, downPay, assets, rate, kids, inflation, raiseRate, retireBonus, bigSpend, bigSpendEvery]
   );
   const improved = useMemo(
     () => run(cutM, upM, memoryM),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [cutM, upM, memoryM, age, retireAge, endAge, incomeM, bonus, livingM, livingRetireM, pension, pensionAuto, pensionType, housingType, rent, repay, remainYears, buyAge, downPay, assets, rate, kids, inflation, raiseRate, retireBonus, bigSpend, bigSpendEvery, incomeDropAge, incomeAfter]
+    [cutM, upM, memoryM, age, retireAge, endAge, incomeM, jobSelf, bonus, livingM, livingRetireM, pension, pensionAuto, hasSpouse, ageSpouse, incomeSpouseM, jobSpouse, retireSpouse, housingType, rent, repay, remainYears, buyAge, downPay, assets, rate, kids, inflation, raiseRate, retireBonus, bigSpend, bigSpendEvery]
   );
 
   const hasLever = cutM > 0 || upM > 0 || memoryM > 0;
@@ -501,9 +520,45 @@ function LifePlanSimulator() {
           {/* ── 入力 ── */}
           <div className="space-y-4">
             <Card icon="🏠" title="わが家のきほん">
-              <Stepper label="あなたの年齢" value={age} onChange={setAge} unit="歳" min={20} max={70} hint="夫婦で歳が違うときは、収入が多い方の年齢でOK" />
-              <Stepper label="手取り月収（世帯）" value={incomeM} onChange={setIncomeM} unit="万" step={1} hint="夫婦合算でOK。だいたいで大丈夫です" />
-              <Stepper label="ボーナス（年間・手取り）" value={bonus} onChange={setBonus} unit="万" step={10} />
+              <Stepper label="あなたの年齢" value={age} onChange={setAge} unit="歳" min={20} max={70} />
+              <Stepper label="あなたの手取り月収（月）" value={incomeM} onChange={setIncomeM} unit="万" step={1} hint="税・社保を引いた手取り。だいたいでOK" />
+              <div className="py-1">
+                <span className="text-sm font-medium" style={{ color: C.ink }}>あなたの働き方</span>
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  {Object.entries(JOBS_SELF).map(([k, v]) => (
+                    <Pill key={k} active={jobSelf === k} onClick={() => setJobSelf(k)} color={C.sage}>{v}</Pill>
+                  ))}
+                </div>
+              </div>
+
+              {/* 配偶者（分けて入力） */}
+              <div className="mt-1 pt-2" style={{ borderTop: `1px solid ${C.line}` }}>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium" style={{ color: C.ink }}>配偶者・パートナー</span>
+                  <div className="flex gap-1">
+                    <Pill active={hasSpouse} onClick={() => setHasSpouse(true)}>いる</Pill>
+                    <Pill active={!hasSpouse} onClick={() => setHasSpouse(false)}>いない</Pill>
+                  </div>
+                </div>
+                {hasSpouse && (
+                  <>
+                    <Stepper label="配偶者の年齢" value={ageSpouse} onChange={setAgeSpouse} unit="歳" min={20} max={70} />
+                    <div className="py-1">
+                      <span className="text-sm font-medium" style={{ color: C.ink }}>配偶者の働き方</span>
+                      <div className="mt-1 flex flex-wrap gap-1.5">
+                        {Object.entries(JOBS_SPOUSE).map(([k, v]) => (
+                          <Pill key={k} active={jobSpouse === k} onClick={() => setJobSpouse(k)} color={C.sage}>{v}</Pill>
+                        ))}
+                      </div>
+                    </div>
+                    {jobSpouse !== "専業" && (
+                      <Stepper label="配偶者の手取り月収（月）" value={incomeSpouseM} onChange={setIncomeSpouseM} unit="万" step={1} />
+                    )}
+                  </>
+                )}
+              </div>
+
+              <Stepper label="ボーナス（年間・手取り・世帯）" value={bonus} onChange={setBonus} unit="万" step={10} />
               <Stepper label="月の生活費" value={livingM} onChange={setLivingM} unit="万" step={1} hint="家賃・ローン・教育費はのぞく" />
               <Stepper label="いまの貯金・投資の合計" value={assets} onChange={setAssets} unit="万" step={50} min={-99999} hint="借金のほうが多いときはマイナスでもOK（例：−200）" />
             </Card>
@@ -611,7 +666,10 @@ function LifePlanSimulator() {
                 ⚙️ 詳細設定（さわらなくてもOK）
               </summary>
               <div className="pt-1">
-                <Stepper label="リタイア予定" value={retireAge} onChange={setRetireAge} unit="歳" min={55} max={75} />
+                <Stepper label="あなたのリタイア予定" value={retireAge} onChange={setRetireAge} unit="歳" min={50} max={75} />
+                {hasSpouse && (
+                  <Stepper label="配偶者のリタイア予定" value={retireSpouse} onChange={setRetireSpouse} unit="歳" min={50} max={75} hint="片方だけ先に辞めるケースもここで" />
+                )}
                 <Stepper label="何歳まで見る？" value={endAge} onChange={setEndAge} unit="歳" min={80} max={100} step={5} />
                 <div className="py-2">
                   <div className="flex items-center justify-between gap-2">
@@ -622,26 +680,17 @@ function LifePlanSimulator() {
                     </div>
                   </div>
                   {pensionAuto ? (
-                    <>
-                      <div className="mt-1.5 flex flex-wrap gap-1.5">
-                        {Object.entries(PENSION_TYPES).map(([k, v]) => (
-                          <Pill key={k} active={pensionType === k} onClick={() => setPensionType(k)} color={C.sage}>
-                            {v.label}
-                          </Pill>
-                        ))}
-                      </div>
-                      <p className="mt-1.5 text-[14px] font-black tabular-nums" style={{ color: C.sage }}>
-                        約 {estPension} 万／月
-                        <span className="ml-1 text-[11px] font-medium" style={{ color: C.sub }}>
-                          （{PENSION_TYPES[pensionType].label}・手取り月収 {incomeM} 万から）
-                        </span>
-                      </p>
-                    </>
+                    <p className="mt-1.5 text-[14px] font-black tabular-nums" style={{ color: C.sage }}>
+                      約 {estPension} 万／月
+                      <span className="ml-1 text-[11px] font-medium" style={{ color: C.sub }}>
+                        （あなた{pensionForPerson(jobSelf, incomeM)}万{hasSpouse ? ` ＋ 配偶者${pensionForPerson(jobSpouse, incomeSpouseM)}万` : ""}）
+                      </span>
+                    </p>
                   ) : (
-                    <Stepper label="ねんきん定期便の額（月）" value={pension} onChange={setPension} unit="万" />
+                    <Stepper label="ねんきん定期便の額（世帯・月）" value={pension} onChange={setPension} unit="万" />
                   )}
                   <p className="mt-0.5 text-[11px] leading-relaxed" style={{ color: C.sub }}>
-                    💡 自動はあくまで「会社員世帯のざっくり目安」。<b style={{ color: C.coral }}>正確に見たいときは「手入力」にして、ねんきん定期便（またはねんきんネット）の見込み額を入れてください。</b>自営業（国民年金のみ）は約13万が目安です。
+                    💡 あなたと配偶者の「働き方」から自動で目安を計算しています（基礎年金＋会社員は厚生年金分）。<b style={{ color: C.coral }}>正確に見たいときは「手入力」にして、ねんきん定期便（またはねんきんネット）の見込み額（世帯合計）を入れてください。</b>
                   </p>
                 </div>
                 <Stepper label="リタイア後の生活費（月）" value={livingRetireM} onChange={setLivingRetireM} unit="万" step={1} hint="退職後は教育費・通勤・食費が減り、現役より下がる家庭が多い。現役と同額にすれば下げません" />
@@ -651,8 +700,6 @@ function LifePlanSimulator() {
                 <Stepper label="退職金（一時金）" value={retireBonus} onChange={setRetireBonus} unit="万" step={100} max={5000} hint="リタイア年に一度だけ入るお金。なければ0に" />
                 <Stepper label="大型支出（1回）" value={bigSpend} onChange={setBigSpend} unit="万" step={50} max={2000} hint="車の買い替え・住宅修繕・家電などのまとまった出費" />
                 <Stepper label="大型支出のペース" value={bigSpendEvery} onChange={setBigSpendEvery} unit="年ごと" step={1} min={1} max={20} hint="上の支出を何年ごとに見込むか" />
-                <Stepper label="収入が下がる年齢" value={incomeDropAge} onChange={setIncomeDropAge} unit="歳" min={age} max={retireAge} hint="片方が仕事をやめる等。下げないならリタイア年齢と同じに" />
-                <Stepper label="その後の世帯手取り（月）" value={incomeAfter} onChange={setIncomeAfter} unit="万" step={1} hint="収入が下がったあとの世帯の手取り月収" />
               </div>
             </details>
           </div>
